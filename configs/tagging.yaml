@@ -1,0 +1,42 @@
+# LLM tagging: a LoRA-tuned instruction model emits a strict JSON object per segment,
+# which is validated against storygraph.schemas.ContentSignals and aggregated per title.
+
+model:
+  base: meta-llama/Meta-Llama-3.1-8B-Instruct
+  adapter: s3://storygraph-models/tagger-lora/v7
+  max_input_tokens: 6144
+  max_new_tokens: 512
+  temperature: 0.0
+  top_p: 1.0
+  json_schema_guided: true      # vLLM guided decoding against ContentSignals.model_json_schema()
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  epochs: 3
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.03
+  per_device_batch_size: 4
+  gradient_accumulation: 8
+  bf16: true
+
+taxonomy:
+  path: docs/taxonomy.md
+  genres_max: 3
+  themes_max: 8
+  moods_max: 4
+
+aggregation:
+  # How per-segment labels become title-level labels.
+  genre: weighted_vote          # weighted by segment word count
+  themes: frequency_threshold
+  themes_min_share: 0.15
+  mood: trajectory              # keep ordered mood list across the title
+  confidence_floor: 0.55
+
+evaluation:
+  editor_gold: s3://storygraph-eval/editor_labels/2026-09.jsonl
+  agreement_metric: macro_f1    # reported alongside Cohen's kappa
+  target_agreement: 0.90

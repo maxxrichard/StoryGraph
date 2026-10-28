@@ -1,0 +1,16 @@
+# Serving image: FastAPI recommendation API + clients for vLLM and OpenSearch.
+FROM python:3.11-slim AS base
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+RUN pip install --upgrade pip uv
+
+FROM base AS deps
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN uv pip install --system -e ".[search]" uvicorn[standard]
+
+FROM deps AS runtime
+COPY configs ./configs
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=3s CMD python -c "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8080/healthz').status_code==200 else 1)"
+CMD ["uvicorn", "storygraph.serving.api:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]

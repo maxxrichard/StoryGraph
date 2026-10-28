@@ -1,0 +1,48 @@
+# A/B experiment definition for the online rollout of the recommender.
+experiment:
+  name: recsys_two_tower_lgbm_v3
+  unit: listener_id
+  salt: "sg-2026-09-rec-v3"
+  layers:
+    - name: homepage_recs
+      variants:
+        control:   { weight: 0.50, model: item_cf_v12 }
+        treatment: { weight: 0.50, model: two_tower_lgbm_v3 }
+  exposure_filter:
+    min_sessions_7d: 1
+    exclude_internal: true
+
+metrics:
+  primary:
+    - name: listen_through_rate
+      type: ratio
+      numerator: listened_seconds
+      denominator: started_seconds
+      min_detectable_effect: 0.01
+  guardrails:
+    - name: conversion_rate
+      type: binary
+      direction: non_inferior
+      margin: -0.005
+    - name: p95_latency_ms
+      type: continuous
+      direction: non_inferior
+      margin: 30
+  secondary:
+    - name: finish_rate
+      type: binary
+    - name: skips_per_session
+      type: continuous
+
+analysis:
+  alpha: 0.05
+  power: 0.8
+  variance_reduction: cuped          # pre-period covariate = same metric, 14 days before exposure
+  cuped_pre_period_days: 14
+  sequential: false
+  srm_alpha: 0.001                   # sample-ratio-mismatch check
+
+rollout:
+  ramp: [0.01, 0.05, 0.20, 0.50, 1.00]
+  hold_hours_per_step: 24
+  auto_rollback_on_guardrail_breach: true

@@ -1,0 +1,63 @@
+# End-to-end content-understanding pipeline configuration.
+# Every stage is idempotent and keyed on (title_id, content_hash) so re-runs skip unchanged work.
+
+pipeline:
+  name: storygraph-content-understanding
+  version: "2026.10"
+  artifact_root: s3://storygraph-artifacts/content
+  shard_count: 256          # titles are hashed into shards for Spark / Step Functions Map
+  max_concurrency: 64
+
+ingest:
+  audio:
+    target_sample_rate: 16000
+    chunk_seconds: 600        # 10-minute chunks with 5s overlap for ASR
+    overlap_seconds: 5
+    vad:
+      enabled: true
+      min_speech_ms: 250
+      min_silence_ms: 500
+  asr:
+    backend: faster-whisper
+    model: large-v3
+    compute_type: int8_float16
+    beam_size: 5
+    language: auto
+    batch_size: 16
+    word_timestamps: true
+
+understanding:
+  segmentation:
+    method: texttiling            # texttiling | embedding-breakpoints
+    window_sentences: 20
+    min_segment_words: 300
+    max_segment_words: 2500
+    smoothing: 3
+  embeddings:
+    model: BAAI/bge-m3
+    dim: 1024
+    normalize: true
+    pooling: mean
+    batch_size: 64
+  tagging:
+    config: configs/tagging.yaml
+  speakers:
+    diarization: pyannote/speaker-diarization-3.1
+    min_speaker_share: 0.02
+  narrative:
+    arc_bins: 12
+    tension_lexicon: data/lexicons/tension.json
+
+sinks:
+  feature_store:
+    type: spark-delta
+    path: s3://storygraph-feature-store/title_signals
+    partition_by: ["shard"]
+  opensearch:
+    index: storygraph-titles-v3
+    mapping: infra/opensearch/index_mapping.json
+    knn:
+      engine: faiss
+      space_type: cosinesimil
+      m: 32
+      ef_construction: 256

@@ -1,0 +1,115 @@
+{
+  "Comment": "StoryGraph content-understanding pipeline: shard the catalog, transcribe + embed + tag each shard in parallel, then publish signals to the feature store and OpenSearch.",
+  "StartAt": "PlanShards",
+  "States": {
+    "PlanShards": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PlanShardsFunctionArn}",
+        "Payload": { "catalog_uri.$": "$.catalog_uri", "shard_count.$": "$.shard_count", "run_id.$": "$$.Execution.Name" }
+      },
+      "ResultSelector": { "shards.$": "$.Payload.shards" },
+      "ResultPath": "$.plan",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 5, "MaxAttempts": 3, "BackoffRate": 2.0 }],
+      "Next": "ProcessShards"
+    },
+    "ProcessShards": {
+      "Type": "Map",
+      "ItemsPath": "$.plan.shards",
+      "MaxConcurrency": 64,
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "DISTRIBUTED", "ExecutionType": "STANDARD" },
+        "StartAt": "Transcribe",
+        "States": {
+          "Transcribe": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+            "Parameters": {
+              "ProcessingJobName.$": "States.Format('sg-asr-{}-{}', $.shard_id, $$.Execution.Name)",
+              "AppSpecification": { "ImageUri": "${PipelineImageUri}", "ContainerEntrypoint": ["python", "-m", "storygraph.orchestration.jobs", "asr"] },
+              "ProcessingResources": { "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.g5.2xlarge", "VolumeSizeInGB": 200 } },
+              "RoleArn": "${SageMakerRoleArn}",
+              "Environment": { "SHARD_URI.$": "$.shard_uri", "STAGE": "asr" }
+            },
+            "Retry": [{ "ErrorEquals": ["SageMaker.AmazonSageMakerException"], "IntervalSeconds": 30, "MaxAttempts": 2, "BackoffRate": 2.0 }],
+            "ResultPath": "$.asr",
+            "Next": "EmbedAndSegment"
+          },
+          "EmbedAndSegment": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+            "Parameters": {
+              "ProcessingJobName.$": "States.Format('sg-embed-{}-{}', $.shard_id, $$.Execution.Name)",
+              "AppSpecification": { "ImageUri": "${PipelineImageUri}", "ContainerEntrypoint": ["python", "-m", "storygraph.orchestration.jobs", "embed"] },
+              "ProcessingResources": { "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.g5.xlarge", "VolumeSizeInGB": 100 } },
+              "RoleArn": "${SageMakerRoleArn}",
+              "Environment": { "SHARD_URI.$": "$.shard_uri", "STAGE": "embed" }
+            },
+            "ResultPath": "$.embed",
+            "Next": "TagWithLLM"
+          },
+          "TagWithLLM": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+            "Parameters": {
+              "ProcessingJobName.$": "States.Format('sg-tag-{}-{}', $.shard_id, $$.Execution.Name)",
+              "AppSpecification": { "ImageUri": "${PipelineImageUri}", "ContainerEntrypoint": ["python", "-m", "storygraph.orchestration.jobs", "tag"] },
+              "ProcessingResources": { "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.g5.12xlarge", "VolumeSizeInGB": 200 } },
+              "RoleArn": "${SageMakerRoleArn}",
+              "Environment": { "SHARD_URI.$": "$.shard_uri", "STAGE": "tag" }
+            },
+            "ResultPath": "$.tag",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.shard_results",
+      "Next": "BuildFeatureStore"
+    },
+    "BuildFeatureStore": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::emr-serverless:startJobRun.sync",
+      "Parameters": {
+        "ApplicationId": "${EmrApplicationId}",
+        "ExecutionRoleArn": "${EmrRoleArn}",
+        "JobDriver": {
+          "SparkSubmit": {
+            "EntryPoint": "s3://storygraph-code/spark_jobs.py",
+            "EntryPointArguments": ["build-title-signals", "--run-id.$", "$$.Execution.Name"],
+            "SparkSubmitParameters": "--conf spark.executor.memory=16g --conf spark.executor.cores=4 --conf spark.dynamicAllocation.maxExecutors=100"
+          }
+        }
+      },
+      "ResultPath": "$.feature_store",
+      "Next": "IndexOpenSearch"
+    },
+    "IndexOpenSearch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${IndexFunctionArn}", "Payload": { "run_id.$": "$$.Execution.Name", "index": "storygraph-titles-v3" } },
+      "ResultPath": "$.index",
+      "Next": "QualityGate"
+    },
+    "QualityGate": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${QualityGateFunctionArn}", "Payload": { "run_id.$": "$$.Execution.Name" } },
+      "ResultSelector": { "passed.$": "$.Payload.passed", "report.$": "$.Payload.report" },
+      "ResultPath": "$.quality",
+      "Next": "GateChoice"
+    },
+    "GateChoice": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.quality.passed", "BooleanEquals": true, "Next": "PromoteAlias" }],
+      "Default": "FailRun"
+    },
+    "PromoteAlias": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${PromoteFunctionArn}", "Payload": { "run_id.$": "$$.Execution.Name", "alias": "storygraph-titles-live" } },
+      "End": true
+    },
+    "FailRun": { "Type": "Fail", "Error": "QualityGateFailed", "Cause": "Signal quality below threshold; alias not promoted." }
+  }
+}

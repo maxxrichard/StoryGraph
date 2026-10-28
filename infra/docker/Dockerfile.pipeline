@@ -1,0 +1,11 @@
+# Pipeline image for SageMaker Processing jobs (ASR, embeddings, LLM tagging).
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends python3.11 python3-pip ffmpeg git && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --upgrade pip uv
+WORKDIR /opt/ml/code
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY configs ./configs
+RUN uv pip install --system -e ".[ml,llm,audio,aws,search]"
+ENTRYPOINT ["python3", "-m", "storygraph.orchestration.jobs"]

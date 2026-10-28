@@ -1,0 +1,55 @@
+# Recommender: two-tower retrieval (user tower x title tower) feeding a LightGBM LambdaRank ranker.
+
+retrieval:
+  two_tower:
+    embedding_dim: 128
+    content_dim: 1024              # frozen title content embedding from the understanding pipeline
+    hidden: [512, 256]
+    dropout: 0.1
+    temperature: 0.05
+    negatives: in_batch            # in_batch | mixed (in-batch + sampled hard negatives)
+    hard_negatives_per_positive: 4
+    epochs: 10
+    batch_size: 2048
+    learning_rate: 1.0e-3
+    weight_decay: 1.0e-5
+  candidates:
+    k_two_tower: 300
+    k_content_knn: 150
+    k_popular: 50
+    k_total_max: 500
+  opensearch:
+    index: storygraph-titles-v3
+    user_vector_field: user_tower_vec
+    title_vector_field: title_tower_vec
+    content_vector_field: content_vec
+
+ranker:
+  objective: lambdarank
+  metric: ndcg
+  eval_at: [10]
+  num_leaves: 63
+  learning_rate: 0.05
+  n_estimators: 800
+  min_data_in_leaf: 200
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 1
+  lambda_l2: 1.0
+  early_stopping_rounds: 50
+  label_gain: [0, 1, 3, 7]        # skip / sample / listen-through / finish+convert
+
+features:
+  group: title_id
+  user: [listen_hours_30d, finish_rate_90d, genre_affinity_vec, mood_affinity_vec, hour_of_day, device]
+  title: [genre, themes, mood, duration_min, narrative_arc_vec, speaker_count, release_age_days, popularity_7d]
+  cross: [two_tower_score, content_knn_score, genre_match, theme_overlap, mood_match, same_narrator]
+
+evaluation:
+  offline:
+    holdout: time_split
+    cutoff: "2026-09-01"
+    metrics: [ndcg@10, recall@50, mrr]
+    baseline: item_cf
+  online:
+    config: configs/experiment.yaml

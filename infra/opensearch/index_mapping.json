@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "knn.algo_param.ef_search": 128,
+      "number_of_shards": 6,
+      "number_of_replicas": 1,
+      "refresh_interval": "30s"
+    }
+  },
+  "mappings": {
+    "properties": {
+      "title_id": { "type": "keyword" },
+      "title": { "type": "text" },
+      "kind": { "type": "keyword" },
+      "duration_min": { "type": "float" },
+      "genres": { "type": "keyword" },
+      "themes": { "type": "keyword" },
+      "moods": { "type": "keyword" },
+      "narrative_arc": { "type": "keyword" },
+      "speaker_count": { "type": "integer" },
+      "popularity_7d": { "type": "float" },
+      "release_date": { "type": "date" },
+      "chapter_summaries": { "type": "text", "index": false },
+      "content_vec": {
+        "type": "knn_vector",
+        "dimension": 1024,
+        "method": { "name": "hnsw", "space_type": "cosinesimil", "engine": "faiss", "parameters": { "m": 32, "ef_construction": 256 } }
+      },
+      "title_tower_vec": {
+        "type": "knn_vector",
+        "dimension": 128,
+        "method": { "name": "hnsw", "space_type": "innerproduct", "engine": "faiss", "parameters": { "m": 32, "ef_construction": 256 } }
+      }
+    }
+  }
+}
